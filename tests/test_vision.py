@@ -167,6 +167,7 @@ def test_decide_protocol(tmp_path):
     assert seen["path"] == "/v1/decide" and seen["body"]["options"] == ["x", "y"] and seen["body"]["thinking"] == "off"
     assert seen["body"]["state"][0]["image"].startswith("data:image/png;base64,")
     assert resp["answers"]["answer"]["choice"] == "B" and resp["usage"]["input_tokens"] == 7
+    assert raw["image_pixels"] == [48]
 
 
 def test_decisions_protocol(tmp_path):
@@ -205,11 +206,11 @@ def test_openai_vision_parses_letters(tmp_path):
         assert body["messages"][0]["content"][0]["type"] == "image_url" and body["temperature"] == 0
         return httpx.Response(200, json={"model": "m", "choices": [{"message": {"content": next(replies)}}], "usage": {"prompt_tokens": 3}})
 
-    e = OpenAIVision(model="m", base_url="http://test", token_env="UNSET_TOKEN_ENV")
+    e = OpenAIVision(model="m", base_url="http://test", token_env="UNSET_TOKEN_ENV", max_pixels=10000)
     e.client = mock_client(handler)
     q = {"answer": {"type": "choice", "instructions": "Pick", "criteria": {"A": "x", "B": "y"}}}
-    resp, _ = e({}, q, images=[png_bytes()])
-    assert resp["answers"]["answer"]["choice"] == "B"
+    resp, raw = e({}, q, images=[png_bytes(size=(400, 300))])
+    assert resp["answers"]["answer"]["choice"] == "B" and raw["image_pixels"][0] <= e.max_pixels
     replies = iter(["no idea", "still no idea"])
     with pytest.raises(Unsupported):
         e({}, q, images=[png_bytes()])
@@ -225,6 +226,8 @@ def test_runner_and_score_with_random_engine(tmp_path):
     assert final["counts"] == {"ok": len(rows)}
     res = [json.loads(l) for l in (out / "results.jsonl").read_text().splitlines()]
     assert {r["run_id"] for r in res} == {r["id"] for r in rows} and res[0]["payload"]["images"][0].startswith("full/")
+    env = json.loads((out / "environment.json").read_text())
+    assert env["effective_image_budget"]["max_image_pixels"] == 0
     s = score_run(root / vrows.ROWS_FILE, out / "results.jsonl", out)
     assert s["complete"] and (out / "vision-scores.json").exists()
     again = run("random", {}, root, out, log=lambda *_: None)
@@ -250,3 +253,36 @@ def test_cli_and_job_command():
     assert "suite rebuild --vision" in cmd and "vllm==0.30.0" in cmd and "--option model=org/m" in cmd and "[vision]" in cmd
     cmd = vision_command("me/results", "openai-vlm", {"model": "org/m"}, "r1", suite_dataset="me/vision-suite")
     assert "hf download me/vision-suite" in cmd and "vllm" not in cmd
+
+
+class BudgetEngine:
+    provenance = {}
+    latency = ""
+
+    def __init__(self, **options):
+        pass
+
+    def runtime(self):
+        return {}
+
+    def __call__(self, state, questions, images=(), prompt=None):
+        keys = list(questions["answer"]["criteria"])
+        return {"answers": {"answer": {"type": "choice", "choice": keys[0], "probabilities": {k: 1 / len(keys) for k in keys}}}}, {"image_pixels": [4096], "image_tokens": 7}
+
+    def close(self):
+        pass
+
+
+def test_runner_records_effective_image_budget(tmp_path, monkeypatch):
+    from decision_index.engines import REGISTRY
+    from decision_index.vision.run import run
+
+    monkeypatch.setitem(REGISTRY, "budget", f"{__name__}:BudgetEngine")
+
+    root, rows = make_suite(tmp_path, n_per_bench=1)
+    out = tmp_path / "run"
+    final = run("budget", {}, root, out, limit=3, compact=True, log=lambda *_: None)
+    assert final["effective_image_budget"] == {"max_image_pixels": 4096, "max_image_tokens": 7, "rows_with_image_tokens": 3}
+    run("budget", {}, root, out, limit=2, log=lambda *_: None)
+    env = json.loads((out / "environment.json").read_text())
+    assert env["effective_image_budget"]["rows_with_image_tokens"] == 5

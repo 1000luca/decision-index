@@ -8,6 +8,7 @@ from decision_index.engines.http import CAPACITY_MARKERS
 from decision_index.vision import images as img
 from decision_index.vision.rows import OPTION_LETTERS
 
+API_MAX_PIXELS = 1600 * 32 * 32
 TAIL = "Answer with the option's letter from the given choices directly."
 
 
@@ -37,6 +38,29 @@ def answer(key, keys, choice, probs, model, usage=None):
     return out
 
 
+def pixels(ref, root=None):
+    from PIL import Image
+    import io
+
+    with Image.open(io.BytesIO(img.load(ref, root))) as im:
+        return im.width * im.height
+
+
+def processor_budget(model, **kwargs):
+    try:
+        from transformers import AutoProcessor
+
+        ip = getattr(AutoProcessor.from_pretrained(model, **kwargs), "image_processor", None)
+    except Exception:
+        return {}
+    out = {}
+    for k in ("max_pixels", "min_pixels", "size", "patch_size", "merge_size", "max_image_tiles", "max_num_patches", "image_seq_length"):
+        v = getattr(ip, k, None)
+        if v is not None:
+            out[k] = v if isinstance(v, (int, float, str)) else dict(v) if hasattr(v, "items") else str(v)
+    return out
+
+
 def softmax(vals):
     top = max(vals)
     if top == -math.inf:
@@ -50,19 +74,26 @@ class VllmVisionChat(Engine):
     name = "vllm-vl"
     latency = "Batched llm.chat wall time per chunk divided by the rows in the chunk; excludes model loading."
 
-    def __init__(self, model, max_model_len=32768, max_images=8, gpu_memory_utilization=0.9, seed=0, llm_options=None, image_root=None, **options):
+    def __init__(self, model, max_model_len=32768, max_images=8, gpu_memory_utilization=0.9, seed=0, llm_options=None, mm_processor_kwargs=None, image_root=None, **options):
         super().__init__(**options)
         from vllm import LLM
 
         self.model = model
         self.image_root = image_root
+        llm_options = dict(llm_options or {})
+        if mm_processor_kwargs:
+            llm_options["mm_processor_kwargs"] = mm_processor_kwargs
         self.llm = LLM(model=model, max_model_len=max_model_len, limit_mm_per_prompt={"image": max_images}, gpu_memory_utilization=gpu_memory_utilization,
-                       logprobs_mode="processed_logprobs", seed=seed, **(llm_options or {}))
+                       logprobs_mode="processed_logprobs", seed=seed, **llm_options)
+        cfg = getattr(self.llm.llm_engine, "model_config", None)
+        self.image_token_id = getattr(getattr(cfg, "hf_config", None), "image_token_id", None)
         tok = self.llm.get_tokenizer()
         self.letter_ids = [tok.convert_tokens_to_ids(l) for l in OPTION_LETTERS]
         import vllm
 
         self.provenance = {"kind": "vllm-chat", "model": model, "vllm": vllm.__version__, "max_model_len": max_model_len,
+                           "image_resize": "none by the kit: original image bytes go to the model's own processor",
+                           "mm_processor_kwargs": mm_processor_kwargs or {}, "processor_image_budget": {**processor_budget(model, **(mm_processor_kwargs or {}))},
                            "policy": "one user turn (images, then question, lettered options and the letter instruction); one decoding step restricted to the option letters; the readout prefix is continued as an assistant turn where the row asks for it"}
 
     def conversation(self, payload):
@@ -80,7 +111,10 @@ class VllmVisionChat(Engine):
         lp = o.outputs[0].logprobs[0] if o.outputs[0].logprobs else {}
         vals = [float(lp[t].logprob) if t in lp else -math.inf for t in self.letter_ids[:k]]
         choice = keys[max(range(k), key=lambda i: vals[i])]
-        return answer(key, keys, choice, softmax(vals), self.model, {"input_tokens": len(o.prompt_token_ids)}), {"letter_logprobs": vals}
+        raw = {"letter_logprobs": vals}
+        if self.image_token_id is not None:
+            raw["image_tokens"] = sum(t == self.image_token_id for t in o.prompt_token_ids)
+        return answer(key, keys, choice, softmax(vals), self.model, {"input_tokens": len(o.prompt_token_ids)}), raw
 
     def batch(self, payloads):
         from vllm import SamplingParams
@@ -110,6 +144,7 @@ class VllmVisionChat(Engine):
                     out[i] = Unsupported(str(o)) if any(m in str(o) for m in CAPACITY_MARKERS) else o
                 else:
                     out[i] = self.read(o, key, keys)
+                    out[i][1]["image_pixels"] = [pixels(p, self.image_root) for p in payloads[i].get("images") or []]
         return out
 
     def __call__(self, state, questions, images=(), prompt=None):
@@ -145,6 +180,7 @@ class HttpDecide(Engine):
         self.extra = extra or {}
         self.client = httpx.Client(base_url=base_url, timeout=timeout, headers=headers)
         self.provenance = {"kind": "http-decide", "base_url": base_url, "path": self.path, "protocol": protocol, "model": model, "image_encoding": image_encoding,
+                           "image_resize": "none by the kit: original image bytes are sent; the server's own image budget applies",
                            "request_options": self.extra}
 
     def body(self, state, questions, images):
@@ -188,6 +224,7 @@ class HttpDecide(Engine):
             if r is not None:
                 if r.status_code == 200:
                     d = r.json()
+                    d["image_pixels"] = [pixels(p, self.image_root) for p in images or []]
                     return self.parse(d, key, keys), d
                 err = f"http {r.status_code}: {r.text[:300]}"
                 if r.status_code in (400, 404, 413, 422):
@@ -221,7 +258,7 @@ class OpenAIVision(Engine):
     name = "openai-vlm"
     latency = "Wall time of the chat-completions calls for the row (including the long-answer retry when the short reply has no letter)."
 
-    def __init__(self, model, base_url=None, token_env="DECISION_INDEX_API_KEY", max_pixels=1600 * 32 * 32, max_tokens=16, long_max_tokens=1024,
+    def __init__(self, model, base_url=None, token_env="DECISION_INDEX_API_KEY", max_pixels=API_MAX_PIXELS, max_tokens=16, long_max_tokens=1024,
                  timeout=180, retries=6, extra_body=None, image_root=None, **options):
         super().__init__(**options)
         import httpx
@@ -235,7 +272,7 @@ class OpenAIVision(Engine):
         self.model, self.max_pixels, self.max_tokens, self.long_max_tokens, self.retries, self.image_root = model, max_pixels, max_tokens, long_max_tokens, retries, image_root
         self.extra_body = extra_body or {}
         self.client = httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout, headers={"Authorization": "Bearer " + token} if token else {})
-        self.provenance = {"kind": "openai-chat", "base_url": base_url, "model": model, "max_pixels": max_pixels, "extra_body": self.extra_body,
+        self.provenance = {"kind": "openai-chat", "base_url": base_url, "model": model, "max_pixels": max_pixels, "image_resize": f"downscaled to at most {max_pixels} pixels" if max_pixels else "none", "extra_body": self.extra_body,
                            "policy": "images re-encoded as JPEG (quality 90) under max_pixels, then the question with lettered options; temperature 0; the first option letter in the reply, else one longer reply and its last stated answer letter"}
 
     def complete(self, content, max_tokens):
@@ -259,7 +296,8 @@ class OpenAIVision(Engine):
 
     def __call__(self, state, questions, images=(), prompt=None):
         key, q, keys = single_choice(questions)
-        content = [{"type": "image_url", "image_url": {"url": img.jpeg_data_url(p, self.image_root, self.max_pixels)}} for p in images or []]
+        urls = [img.jpeg_data_url(p, self.image_root, self.max_pixels) for p in images or []]
+        content = [{"type": "image_url", "image_url": {"url": u}} for u in urls]
         content.append({"type": "text", "text": prompt_text(q, prompt)})
         text, raw = self.complete(content, self.max_tokens)
         choice = parse_short(text, len(keys))
@@ -269,7 +307,7 @@ class OpenAIVision(Engine):
         if choice is None:
             raise Unsupported("no option letter in the reply: " + text[-200:])
         usage = raw.get("usage") or {}
-        return answer(key, keys, choice, [float(k == choice) for k in keys], raw.get("model") or self.model, {"input_tokens": usage.get("prompt_tokens")}), {"text": text, "model": raw.get("model")}
+        return answer(key, keys, choice, [float(k == choice) for k in keys], raw.get("model") or self.model, {"input_tokens": usage.get("prompt_tokens")}), {"text": text, "model": raw.get("model"), "image_pixels": [pixels(u) for u in urls]}
 
     def warmup(self):
         pass

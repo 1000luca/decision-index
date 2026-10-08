@@ -76,6 +76,18 @@ The `decide` and `openai-vlm` engines run `--workers` (8) requests at a time. An
 
 The board ran each entrant through its author's own inference code where there is one; these engines cover the common serving shapes.
 
+## Image resolution
+
+Models run at their **native maximum image resolution**. If the model's author caps image size below what the architecture supports (a `max_pixels` or similar setting in the processor config, a resize in the serving code), the cap is lifted for the board run. The exceptions are architectures with a fixed image budget by design, such as a fixed input size or a fixed number of image tokens or tiles; they run at that budget. Everything stays subject to the latency rule: median, mean and 80th-percentile latency at most 1,000 ms per request on one RTX PRO 6000. If native resolution breaks it, the model is not added.
+
+The kit itself never shrinks an image below its stored size for the local engines:
+
+- `vllm-vl` passes the original image to the model's own processor. Lift a processor cap with `--option mm_processor_kwargs='{"max_pixels": N}'` (the keys depend on the model).
+- `decide` sends the original bytes. The server's own image settings apply, so start it with its caps lifted.
+- `openai-vlm` downscales to `max_pixels` before sending (default 1,638,400 = 1600×32×32, the setting the board used for API models). `--option max_pixels=null` sends full size.
+
+Every run records what was actually used. `environment.json` has the engine's resize policy (`model_source.image_resize`), and for `vllm-vl` the processor's image settings (`processor_image_budget`) and any `mm_processor_kwargs`. Its `effective_image_budget` holds the largest image sent, in pixels (`max_image_pixels`), and for `vllm-vl` the most image tokens in one request (`max_image_tokens`), counted from the prompt. Each result row's `raw_output` has the row's `image_pixels`, plus `image_tokens` where the engine can count them.
+
 ## Run and score
 
 Locally:
@@ -108,5 +120,5 @@ The **Full** vision score is `0.5 × public + 0.5 × private`.
 ## Submitting
 
 1. Run the whole public vision suite with this kit (`vision pipeline` or `vision hf-job`) and upload the run directory to a Hub dataset. `vision-scores.json` must say `"complete": true`; the results file is rescored on review.
-2. Open a pull request adding a line to `submissions/README.md` marked **vision**, with the model name and Hub repo, the results dataset link, the engine and its options, the kit commit, the hardware, and any declared limits (for example a maximum number of images per request).
+2. Open a pull request adding a line to `submissions/README.md` marked **vision**, with the model name and Hub repo, the results dataset link, the engine and its options, the kit commit, the hardware, any declared limits (for example a maximum number of images per request), and the image resolution you ran at: native, with every author-set cap lifted, or the model's fixed image budget ([Image resolution](#image-resolution)). The run's `effective_image_budget` must agree.
 3. The maintainers then run the private half themselves: private tests of the same skills as the public benchmarks. They run the model the way you did, so it must be runnable by them: weights on the Hub (public, or access granted on request), and the inference code or server you used with its settings. The private tests are never published or shared, with submitters or anyone else; the board shows only each model's aggregate private score.

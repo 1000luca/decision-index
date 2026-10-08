@@ -11,6 +11,12 @@ from decision_index.suite.io import atomic_json, dumps, read_jsonl
 from decision_index.vision.rows import ROWS_FILE
 
 
+def read_json(path):
+    import json
+
+    return json.loads(Path(path).read_text()) if Path(path).exists() else {}
+
+
 def stamp():
     return datetime.now(timezone.utc).isoformat()
 
@@ -45,6 +51,7 @@ def run(engine_name, engine_options, root, out_dir, rows_path=None, workers=1, c
     t = time.perf_counter()
     event(event="loading", engine=engine_name)
     engine = load_engine(engine_name, image_root=str(root), **engine_options)
+    prev = read_json(out / "environment.json").get("effective_image_budget") or {} if resume else {}
     atomic_json(out / "environment.json", {"engine": engine_name, "engine_options": engine_options, "model_source": engine.provenance, **engine.runtime(),
                                            "loaded_seconds": time.perf_counter() - t, "rows_path": str(rows_path),
                                            "rows_sha256": hashlib.sha256(rows_path.read_bytes()).hexdigest(), "latency": engine.latency})
@@ -67,6 +74,7 @@ def run(engine_name, engine_options, root, out_dir, rows_path=None, workers=1, c
         else:
             chunks.append([r])
     counts = collections.Counter()
+    budget = {"max_image_pixels": 0, "max_image_tokens": None, "rows_with_image_tokens": 0}
     start = time.perf_counter()
     pool = ThreadPoolExecutor(max(1, workers))
 
@@ -91,6 +99,11 @@ def run(engine_name, engine_options, root, out_dir, rows_path=None, workers=1, c
                 timed = list(pool.map(call, payloads))
             for row, payload, (r, ms) in zip(rows, payloads, timed):
                 result = {**row["_evaluation"], "started_utc": started, "engine": engine_name, **outcome(payload, r)}
+                raw = result.get("raw_output") if isinstance(result.get("raw_output"), dict) else {}
+                budget["max_image_pixels"] = max([budget["max_image_pixels"], *(raw.get("image_pixels") or [])])
+                if raw.get("image_tokens") is not None:
+                    budget["max_image_tokens"] = max(budget["max_image_tokens"] or 0, raw["image_tokens"])
+                    budget["rows_with_image_tokens"] += 1
                 if compact:
                     result.pop("raw_output", None)
                 else:
@@ -105,6 +118,14 @@ def run(engine_name, engine_options, root, out_dir, rows_path=None, workers=1, c
                 raise RuntimeError("Five failed requests without a success; stop instead of filling the benchmark with runtime errors")
     pool.shutdown()
     engine.close()
-    final = dict(event="complete", engine=engine_name, completed=sum(counts.values()), counts=dict(counts), elapsed_seconds=round(time.perf_counter() - start, 1))
+    env = read_json(out / "environment.json")
+    budget["max_image_pixels"] = max(budget["max_image_pixels"], prev.get("max_image_pixels") or 0)
+    if prev.get("max_image_tokens") is not None:
+        budget["max_image_tokens"] = max(budget["max_image_tokens"] or 0, prev["max_image_tokens"])
+    budget["rows_with_image_tokens"] += prev.get("rows_with_image_tokens") or 0
+    env["effective_image_budget"] = budget
+    atomic_json(out / "environment.json", env)
+    final = dict(event="complete", engine=engine_name, completed=sum(counts.values()), counts=dict(counts), effective_image_budget=budget,
+                 elapsed_seconds=round(time.perf_counter() - start, 1))
     event(**final)
     return final
