@@ -12,7 +12,7 @@ On the board:
 
 - The main ranking is the Full score: 20% public benchmarks, 50% private tests of the same skills and 30% private decision tasks from new domains. Before adding them up, each private part is put on the public scale using untuned stock models as the yardstick: a model that sits a given distance above the stock models' average on a private part gets the score that sits the same distance above their average on the public index. Most of the score comes from tests nobody can train on, so a public-only advantage counts for little.
 - Models whose Full scores are less than 0.9 points apart share a rank: a gap that small is within what a fresh sample of questions could produce, 95% of the time.
-- A Vision board ranks models that read images, on public vision benchmarks and private tests of the same skills, weighted equally. This kit covers the text suite.
+- A Vision board ranks models that read images, on public vision benchmarks and private tests of the same skills, weighted equally. This kit rebuilds, runs and scores the public vision suite too: see [Vision](#vision).
 - A Reasoning board is coming in 0.3.x, for models that can choose to think before answering the hard questions; thinking takes longer, so they get a board of their own.
 
 In the public suite (what this kit runs):
@@ -229,27 +229,46 @@ The public suite is 20% of the Full score. After review, the maintainers run the
 
 The maintainers measure latency themselves, single-process on one RTX PRO 6000 using the fastest path the model's code supports, on a private held-out sample. That same sample is used to validate submitted runs by comparing answers. Models whose median, mean or 80th-percentile latency there is over 1,000 ms per request are not added to the board: at that speed they are no longer Jev-like.
 
+## Vision
+
+The Vision board's Full score is 50% the **public vision index** and 50% private tests of the same skills. The kit covers the public half: 11 benchmarks, 12,210 multiple-choice rows over one to four images each (CV-Bench, BLINK, RealWorldQA, CharXiv, InfographicVQA, Mind2Web, Winoground, KIE on CORD and FUNSD, Hateful Memes at weight 1; R-Bench-M at 0.5 and MMMU-Pro vision at 0.25).
+
+```bash
+pip install -e '.[vision]'
+decision-index suite rebuild --vision --work work        # pinned sources, about 5.7 GB of downloads
+decision-index vision verify --dir work/vision
+decision-index vision pipeline --dir work/vision --engine vllm-vl --model Qwen/Qwen3-VL-8B-Instruct --out runs/vision-qwen3-vl-8b
+decision-index vision hf-job --engine vllm-vl --model Qwen/Qwen3-VL-8B-Instruct --results-repo <you>/decision-index-results
+```
+
+The suite is never distributed: the images and questions are fetched from the pinned upstream revisions at rebuild time and checked against the board's public rows (run ids and payload hashes). Engines: `vllm-vl` (the board's reference vLLM letter readout), `decide` (`/v1/decide` or `/v1/decisions` servers that take images) and `openai-vlm` (any OpenAI-compatible chat endpoint). The index is each benchmark's chance-corrected skill, clipped to [0, 1], in a weighted mean; rescoring the board's run files reproduces its published public numbers exactly.
+
+To submit, run the whole public vision suite and open a pull request as for the text board, marked **vision**. The maintainers run the private tests of the same skills themselves; those tests are never published, and the board shows only each model's aggregate score on them. Details, sources, licences and the request format: [docs/vision.md](docs/vision.md).
+
 ## Layout
 
 ```
 decision_index/
   editions.py           0.1, 0.2, 0.2.1 and 0.3: hashes, counts, subsets, retired and replaced benchmarks
-  cli.py                suite | run | score | pipeline | hf-job
+  cli.py                suite | run | score | pipeline | hf-job | vision
   runner.py             checkpoint/resume loop, results.jsonl rows
   pipeline.py           score + index + upload
   hf_job.py             one-job submitter (rtx-pro-6000)
   engines/              Engine base, http, transformers, random
+  vision/               public vision suite: pinned builders, rows, engines (vllm-vl, decide, openai-vlm), runner, scorer
   scoring/              metrics, per-benchmark report, 0.1 index, 0.2, 0.2.1 and 0.3 public index (index02), new-benchmark scorer (added)
   suite/                download, verify, sample, build/ (0.1 normalizers, 0.2 cut, new benchmarks, 0.3 GSM8K)
-  data/                 panels, chance levels, benchmark catalog, release-v2 and release-v2.1 subset lists
+  data/                 panels, chance levels, benchmark catalog, release-v2 and release-v2.1 subset lists, vision-0.3.json pins
 hub/                    exclusions and manifests to stage with the rows (hub/0.2, hub/0.2.1, hub/0.3)
 scripts/prepare_hub_upload.py
-docs/                   suite.md, format.md, engines.md, edition-0.1.md
-tests/                  metrics, index math (0.1, 0.2, 0.2.1 and 0.3), editions, report, runner
+docs/                   suite.md, format.md, engines.md, edition-0.1.md, vision.md
+tests/                  metrics, index math (0.1, 0.2, 0.2.1 and 0.3), editions, report, runner, vision
 ```
 
 ## Licence notes
 
 Code in this repository is MIT. The suite contains text from 43 upstream datasets plus one purpose-built benchmark, each under its own terms (listed per benchmark in [docs/suite.md](docs/suite.md)). Several are research-only or non-commercial (ANLI CC BY-NC 4.0; RAGTruth's MS MARCO contexts), some forbid redistribution (RAGTruth's Yelp contexts), some are share-alike (SGD, HoVer), GPQA asks that its questions not be posted in plain text, BBH carries the BIG-bench canary, and HLE is gated. Treat the suite as evaluation data under those terms; do not train on it and do not republish it.
+
+The vision suite is built on your machine from its sources and is not in this repository. RealWorldQA is CC BY-ND 4.0, FUNSD is non-commercial, Winoground is research-only and gated, and the Hateful Memes licence forbids redistributing derivatives; the per-benchmark terms are in [docs/vision.md](docs/vision.md). Keep a rebuilt copy private.
 
 Not affiliated with TypeSafe AI.

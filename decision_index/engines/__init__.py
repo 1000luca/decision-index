@@ -4,6 +4,9 @@ REGISTRY = {
     "http": "decision_index.engines.http:HttpSystemOne",
     "transformers": "decision_index.engines.transformers_engine:TransformersEngine",
     "random": "decision_index.engines.base:RandomEngine",
+    "vllm-vl": "decision_index.vision.engines:VllmVisionChat",
+    "decide": "decision_index.vision.engines:HttpDecide",
+    "openai-vlm": "decision_index.vision.engines:OpenAIVision",
 }
 
 

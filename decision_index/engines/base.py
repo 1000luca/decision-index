@@ -74,7 +74,7 @@ class RandomEngine(Engine):
         self.rng = random.Random(seed)
         self.provenance = {"kind": "baseline", "seed": seed, "policy": "uniform choice over the supplied options; a sanity check, not a model"}
 
-    def __call__(self, state, questions):
+    def __call__(self, state, questions, **inputs):
         answers = {}
         for k, q in questions.items():
             if q["type"] == "choice":

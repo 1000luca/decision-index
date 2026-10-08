@@ -131,7 +131,7 @@ def upload_run(repo_id, run_dir, path_in_repo="", private=True, token=None, comp
     run_dir = Path(run_dir)
     staged = run_dir / "_upload"
     staged.mkdir(exist_ok=True)
-    for name in ("benchmark-summary.json", "index.json", "scores.json", "environment.json", "status.json"):
+    for name in ("benchmark-summary.json", "index.json", "scores.json", "vision-scores.json", "environment.json", "status.json"):
         if (run_dir / name).exists():
             shutil.copyfile(run_dir / name, staged / name)
     results = run_dir / "results.jsonl"
