@@ -4,6 +4,35 @@ import io
 from pathlib import Path
 
 PASS_THROUGH = ("PNG", "JPEG", "WEBP", "GIF")
+MAX_PIXELS = 1600 * 32 * 32
+
+
+def fit(w, h, max_pixels):
+    if not max_pixels or w * h <= max_pixels:
+        return w, h
+    s = (max_pixels / (w * h)) ** 0.5
+    w2, h2 = max(1, int(w * s)), max(1, int(h * s))
+    while w2 * h2 > max_pixels:
+        if w2 >= h2:
+            w2 -= 1
+        else:
+            h2 -= 1
+    return w2, h2
+
+
+def capped(ref, root=None, max_pixels=MAX_PIXELS):
+    from PIL import Image
+
+    raw = load(ref, root)
+    with Image.open(io.BytesIO(raw)) as im:
+        size = fit(im.width, im.height, max_pixels)
+        if size == im.size:
+            return raw
+        fmt = "PNG" if im.format == "PNG" else "JPEG"
+        out = im.convert("RGBA" if fmt == "PNG" and ("A" in im.mode or "transparency" in im.info) else "RGB").resize(size, Image.LANCZOS)
+    buf = io.BytesIO()
+    out.save(buf, format=fmt, **({"quality": 95} if fmt == "JPEG" else {}))
+    return buf.getvalue()
 
 
 def load(ref, root=None):
@@ -23,18 +52,18 @@ def load(ref, root=None):
         raise FileNotFoundError(ref)
 
 
-def pil(ref, root=None):
+def pil(ref, root=None, max_pixels=None):
     from PIL import Image
 
-    im = Image.open(io.BytesIO(load(ref, root)))
+    im = Image.open(io.BytesIO(capped(ref, root, max_pixels) if max_pixels else load(ref, root)))
     im.load()
     return im
 
 
-def data_url(ref, root=None):
+def data_url(ref, root=None, max_pixels=None):
     from PIL import Image
 
-    raw = load(ref, root)
+    raw = capped(ref, root, max_pixels) if max_pixels else load(ref, root)
     with Image.open(io.BytesIO(raw)) as im:
         if im.format in PASS_THROUGH:
             return f"data:image/{im.format.lower()};base64," + base64.b64encode(raw).decode()
@@ -49,18 +78,24 @@ def jpeg_data_url(ref, root=None, max_pixels=None, quality=90):
     im = pil(ref, root).convert("RGB")
     w, h = im.size
     if max_pixels and w * h > max_pixels:
-        s = (max_pixels / (w * h)) ** 0.5
-        im = im.resize((max(1, int(w * s)), max(1, int(h * s))), Image.BICUBIC)
+        im = im.resize(fit(w, h, max_pixels), Image.BICUBIC)
     buf = io.BytesIO()
     im.save(buf, format="JPEG", quality=quality)
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-def encode(ref, how, root=None):
+def encode(ref, how, root=None, max_pixels=None):
     if how == "data_url":
-        return data_url(ref, root)
+        return data_url(ref, root, max_pixels)
     if how == "base64":
-        return data_url(ref, root).split(",", 1)[1]
+        return data_url(ref, root, max_pixels).split(",", 1)[1]
     if how == "path":
-        return str((Path(root) / ref) if root and not Path(ref).is_absolute() else Path(ref))
+        path = (Path(root) / ref) if root and not Path(ref).is_absolute() else Path(ref)
+        if max_pixels:
+            from PIL import Image
+
+            with Image.open(path) as im:
+                if im.width * im.height > max_pixels:
+                    raise ValueError(f"{path} is over {max_pixels} pixels; use data_url or base64 so the kit can downscale it")
+        return str(path)
     raise ValueError(f"unknown image encoding {how!r}; use data_url, base64 or path")

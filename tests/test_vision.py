@@ -286,3 +286,42 @@ def test_runner_records_effective_image_budget(tmp_path, monkeypatch):
     run("budget", {}, root, out, limit=2, log=lambda *_: None)
     env = json.loads((out / "environment.json").read_text())
     assert env["effective_image_budget"]["rows_with_image_tokens"] == 5
+
+
+def test_images_are_capped_at_1_6_megapixels(tmp_path):
+    from decision_index.vision import images
+    from decision_index.vision.engines import HttpDecide, OpenAIVision, VllmVisionChat
+    import inspect
+
+    assert images.MAX_PIXELS == 1638400
+    for cls in (VllmVisionChat, HttpDecide, OpenAIVision):
+        assert inspect.signature(cls.__init__).parameters["max_pixels"].default == 1638400
+    small = png_bytes(size=(640, 480))
+    assert images.capped(small) == small
+    big = png_bytes(size=(2000, 1500))
+    out = Image.open(io.BytesIO(images.capped(big)))
+    assert out.width * out.height <= 1638400 and abs(out.width / out.height - 4 / 3) < 0.01 and out.format == "PNG"
+    assert images.load(images.data_url(big)) == big
+    (tmp_path / "big.png").write_bytes(big)
+    with pytest.raises(ValueError):
+        images.encode("big.png", "path", tmp_path, max_pixels=1638400)
+
+
+def test_decide_downscales_over_the_cap(tmp_path):
+    from decision_index.vision.engines import HttpDecide
+
+    (tmp_path / "big.png").write_bytes(png_bytes(size=(2000, 1500)))
+    seen = {}
+
+    def handler(request):
+        import httpx
+
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choice_index": 0, "probabilities": [0.6, 0.4]})
+
+    e = HttpDecide(base_url="http://test", image_root=str(tmp_path))
+    e.client = mock_client(handler)
+    q = {"answer": {"type": "choice", "instructions": "Pick", "criteria": {"A": "x", "B": "y"}}}
+    _, raw = e({}, q, images=["big.png"])
+    sent = Image.open(io.BytesIO(base64.b64decode(seen["body"]["state"][0]["image"].split(",", 1)[1])))
+    assert sent.width * sent.height <= 1638400 and raw["image_pixels"] == [sent.width * sent.height]

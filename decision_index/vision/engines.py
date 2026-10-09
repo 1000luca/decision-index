@@ -8,7 +8,7 @@ from decision_index.engines.http import CAPACITY_MARKERS
 from decision_index.vision import images as img
 from decision_index.vision.rows import OPTION_LETTERS
 
-API_MAX_PIXELS = 1600 * 32 * 32
+MAX_PIXELS = img.MAX_PIXELS
 TAIL = "Answer with the option's letter from the given choices directly."
 
 
@@ -38,12 +38,18 @@ def answer(key, keys, choice, probs, model, usage=None):
     return out
 
 
-def pixels(ref, root=None):
+def pixels(ref, root=None, max_pixels=None):
     from PIL import Image
     import io
 
     with Image.open(io.BytesIO(img.load(ref, root))) as im:
-        return im.width * im.height
+        return img.fit(im.width, im.height, max_pixels)[0] * img.fit(im.width, im.height, max_pixels)[1]
+
+
+def resize_policy(max_pixels):
+    if not max_pixels:
+        return "none by the kit: original image bytes"
+    return f"images over {max_pixels} pixels are downscaled to fit (aspect kept, LANCZOS); smaller images are sent as their original bytes"
 
 
 def processor_budget(model, **kwargs):
@@ -74,12 +80,13 @@ class VllmVisionChat(Engine):
     name = "vllm-vl"
     latency = "Batched llm.chat wall time per chunk divided by the rows in the chunk; excludes model loading."
 
-    def __init__(self, model, max_model_len=32768, max_images=8, gpu_memory_utilization=0.9, seed=0, llm_options=None, mm_processor_kwargs=None, image_root=None, **options):
+    def __init__(self, model, max_model_len=32768, max_images=8, gpu_memory_utilization=0.9, seed=0, llm_options=None, mm_processor_kwargs=None, max_pixels=MAX_PIXELS, image_root=None, **options):
         super().__init__(**options)
         from vllm import LLM
 
         self.model = model
         self.image_root = image_root
+        self.max_pixels = max_pixels
         llm_options = dict(llm_options or {})
         if mm_processor_kwargs:
             llm_options["mm_processor_kwargs"] = mm_processor_kwargs
@@ -92,13 +99,13 @@ class VllmVisionChat(Engine):
         import vllm
 
         self.provenance = {"kind": "vllm-chat", "model": model, "vllm": vllm.__version__, "max_model_len": max_model_len,
-                           "image_resize": "none by the kit: original image bytes go to the model's own processor",
+                           "max_pixels": max_pixels, "image_resize": resize_policy(max_pixels) + "; then the model's own processor",
                            "mm_processor_kwargs": mm_processor_kwargs or {}, "processor_image_budget": {**processor_budget(model, **(mm_processor_kwargs or {}))},
                            "policy": "one user turn (images, then question, lettered options and the letter instruction); one decoding step restricted to the option letters; the readout prefix is continued as an assistant turn where the row asks for it"}
 
     def conversation(self, payload):
         key, q, keys = single_choice(payload["questions"])
-        content = [{"type": "image_pil", "image_pil": img.pil(p, self.image_root).convert("RGB")} for p in payload.get("images") or []]
+        content = [{"type": "image_pil", "image_pil": img.pil(p, self.image_root, self.max_pixels).convert("RGB")} for p in payload.get("images") or []]
         content.append({"type": "text", "text": prompt_text(q, payload.get("prompt"))})
         msgs = [{"role": "user", "content": content}]
         readout = (payload.get("prompt") or {}).get("readout")
@@ -144,7 +151,7 @@ class VllmVisionChat(Engine):
                     out[i] = Unsupported(str(o)) if any(m in str(o) for m in CAPACITY_MARKERS) else o
                 else:
                     out[i] = self.read(o, key, keys)
-                    out[i][1]["image_pixels"] = [pixels(p, self.image_root) for p in payloads[i].get("images") or []]
+                    out[i][1]["image_pixels"] = [pixels(p, self.image_root, self.max_pixels) for p in payloads[i].get("images") or []]
         return out
 
     def __call__(self, state, questions, images=(), prompt=None):
@@ -162,7 +169,7 @@ class HttpDecide(Engine):
     latency = "HTTP request wall time against the configured decide endpoint; excludes server startup."
 
     def __init__(self, base_url=None, path=None, protocol="decide", model="default", token_env="DECISION_INDEX_API_KEY", timeout=900, retries=4,
-                 image_encoding="data_url", thinking="off", extra=None, image_root=None, **options):
+                 image_encoding="data_url", thinking="off", extra=None, max_pixels=MAX_PIXELS, image_root=None, **options):
         super().__init__(**options)
         import httpx
 
@@ -176,16 +183,17 @@ class HttpDecide(Engine):
         if token:
             headers["Authorization"] = "Bearer " + token
         self.path = path or ("/v1/decide" if protocol == "decide" else "/v1/decisions")
+        self.max_pixels = max_pixels
         self.protocol, self.model, self.retries, self.image_encoding, self.thinking, self.image_root = protocol, model, retries, image_encoding, thinking, image_root
         self.extra = extra or {}
         self.client = httpx.Client(base_url=base_url, timeout=timeout, headers=headers)
         self.provenance = {"kind": "http-decide", "base_url": base_url, "path": self.path, "protocol": protocol, "model": model, "image_encoding": image_encoding,
-                           "image_resize": "none by the kit: original image bytes are sent; the server's own image budget applies",
+                           "max_pixels": max_pixels, "image_resize": resize_policy(max_pixels) + "; the server's own image settings then apply",
                            "request_options": self.extra}
 
     def body(self, state, questions, images):
         key, q, keys = single_choice(questions)
-        enc = [img.encode(p, self.image_encoding, self.image_root) for p in images or []]
+        enc = [img.encode(p, self.image_encoding, self.image_root, self.max_pixels) for p in images or []]
         if self.protocol == "decide":
             b = {"kind": "choice", "state": [{"image": u} for u in enc] if enc else (state or {}), "question": q["instructions"],
                  "options": [q["criteria"][k] for k in keys]}
@@ -224,7 +232,7 @@ class HttpDecide(Engine):
             if r is not None:
                 if r.status_code == 200:
                     d = r.json()
-                    d["image_pixels"] = [pixels(p, self.image_root) for p in images or []]
+                    d["image_pixels"] = [pixels(p, self.image_root, self.max_pixels) for p in images or []]
                     return self.parse(d, key, keys), d
                 err = f"http {r.status_code}: {r.text[:300]}"
                 if r.status_code in (400, 404, 413, 422):
@@ -258,7 +266,7 @@ class OpenAIVision(Engine):
     name = "openai-vlm"
     latency = "Wall time of the chat-completions calls for the row (including the long-answer retry when the short reply has no letter)."
 
-    def __init__(self, model, base_url=None, token_env="DECISION_INDEX_API_KEY", max_pixels=API_MAX_PIXELS, max_tokens=16, long_max_tokens=1024,
+    def __init__(self, model, base_url=None, token_env="DECISION_INDEX_API_KEY", max_pixels=MAX_PIXELS, max_tokens=16, long_max_tokens=1024,
                  timeout=180, retries=6, extra_body=None, image_root=None, **options):
         super().__init__(**options)
         import httpx
@@ -272,7 +280,7 @@ class OpenAIVision(Engine):
         self.model, self.max_pixels, self.max_tokens, self.long_max_tokens, self.retries, self.image_root = model, max_pixels, max_tokens, long_max_tokens, retries, image_root
         self.extra_body = extra_body or {}
         self.client = httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout, headers={"Authorization": "Bearer " + token} if token else {})
-        self.provenance = {"kind": "openai-chat", "base_url": base_url, "model": model, "max_pixels": max_pixels, "image_resize": f"downscaled to at most {max_pixels} pixels" if max_pixels else "none", "extra_body": self.extra_body,
+        self.provenance = {"kind": "openai-chat", "base_url": base_url, "model": model, "max_pixels": max_pixels, "image_resize": "every image re-encoded as JPEG quality 90" + (f", downscaled to fit {max_pixels} pixels when larger (aspect kept, bicubic)" if max_pixels else ""), "extra_body": self.extra_body,
                            "policy": "images re-encoded as JPEG (quality 90) under max_pixels, then the question with lettered options; temperature 0; the first option letter in the reply, else one longer reply and its last stated answer letter"}
 
     def complete(self, content, max_tokens):

@@ -68,9 +68,9 @@ An engine is called as `engine(state, questions, images=[...], prompt={...})`. T
 
 | Engine | What it drives | Main options |
 |---|---|---|
-| `vllm-vl` | vLLM in-process, the board's reference path for stock VLMs: one user turn (images, then the question, `A. option` lines and `Answer with the option's letter from the given choices directly.`), one decoding step restricted to the option letters, read from processed logprobs; the readout prefix is continued as an assistant turn. Rows go to `llm.chat` in batches of `--chunk` (256) per set. | `model`, `max_model_len` (32768), `max_images` (8), `gpu_memory_utilization` (0.9), `llm_options` (passed to `vllm.LLM`) |
-| `decide` | A `/v1/decide` server: `{"kind": "choice", "state": [{"image": data URL}, ...], "question", "options": [texts], "thinking": "off"}`, answered with `choice_index` and `probabilities`. With `protocol=decisions` it speaks `/v1/decisions` instead: `{"model", "state", "questions", "images": [...]}`. | `base_url`, `path`, `protocol` (`decide` or `decisions`), `model`, `image_encoding` (`data_url`, `base64`, `path`), `thinking` (`off`; null leaves it out), `extra` (merged into the body); token from `DECISION_INDEX_API_KEY` |
-| `openai-vlm` | Any OpenAI-compatible `/chat/completions` endpoint (default `https://router.huggingface.co/v1` with your HF token). Images are re-encoded as JPEG under `max_pixels`, temperature 0; the first option letter in a 16-token reply is the answer, else one 1,024-token reply is read for its last stated letter; a reply with no letter is recorded as `unsupported`. | `model`, `base_url`, `max_pixels` (1,638,400), `extra_body` (e.g. `{"chat_template_kwargs": {"enable_thinking": false}}`); token from `DECISION_INDEX_API_KEY` |
+| `vllm-vl` | vLLM in-process, the board's reference path for stock VLMs: images capped at 1.6 MP, one user turn (images, then the question, `A. option` lines and `Answer with the option's letter from the given choices directly.`), one decoding step restricted to the option letters, read from processed logprobs; the readout prefix is continued as an assistant turn. Rows go to `llm.chat` in batches of `--chunk` (256) per set. | `model`, `max_model_len` (32768), `max_images` (8), `gpu_memory_utilization` (0.9), `max_pixels` (1,638,400), `mm_processor_kwargs`, `llm_options` (passed to `vllm.LLM`) |
+| `decide` | A `/v1/decide` server: `{"kind": "choice", "state": [{"image": data URL}, ...], "question", "options": [texts], "thinking": "off"}`, answered with `choice_index` and `probabilities`. With `protocol=decisions` it speaks `/v1/decisions` instead: `{"model", "state", "questions", "images": [...]}`. | `base_url`, `path`, `protocol` (`decide` or `decisions`), `model`, `image_encoding` (`data_url`, `base64`, `path`), `thinking` (`off`; null leaves it out), `max_pixels` (1,638,400), `extra` (merged into the body); token from `DECISION_INDEX_API_KEY` |
+| `openai-vlm` | Any OpenAI-compatible `/chat/completions` endpoint (default `https://router.huggingface.co/v1` with your HF token). Images are re-encoded as JPEG and capped at `max_pixels`, temperature 0; the first option letter in a 16-token reply is the answer, else one 1,024-token reply is read for its last stated letter; a reply with no letter is recorded as `unsupported`. | `model`, `base_url`, `max_pixels` (1,638,400), `extra_body` (e.g. `{"chat_template_kwargs": {"enable_thinking": false}}`); token from `DECISION_INDEX_API_KEY` |
 
 The `decide` and `openai-vlm` engines run `--workers` (8) requests at a time. Any engine can be your own class (`--engine my_module:MyEngine`): take `state, questions, images=(), prompt=None`, and optionally a `batch(payloads)` method returning one `(response, raw)` or exception per payload.
 
@@ -78,15 +78,22 @@ The board ran each entrant through its author's own inference code where there i
 
 ## Image resolution
 
-Models run at their **native maximum image resolution**. If the model's author caps image size below what the architecture supports (a `max_pixels` or similar setting in the processor config, a resize in the serving code), the cap is lifted for the board run. The exceptions are architectures with a fixed image budget by design, such as a fixed input size or a fixed number of image tokens or tiles; they run at that budget. Everything stays subject to the latency rule: median, mean and 80th-percentile latency at most 1,000 ms per request on one RTX PRO 6000. If native resolution breaks it, the model is not added.
+Models run at their **native resolution, capped at 1,638,400 pixels (1.6 MP) per image**. If the model's author caps image size below 1.6 MP (a `max_pixels` or similar setting in the processor config, a resize in the serving code), lift that cap up to 1.6 MP for the run; never go above it. Architectures with a fixed image budget by design use their largest setting at or below 1.6 MP; for example, Gemma 4 runs at 560 soft tokens, about 1.3 MP. Everything stays subject to the latency rule: median, mean and 80th-percentile latency at most 1,000 ms per request on one RTX PRO 6000. If the model breaks it at this resolution, it is not added.
 
-The kit itself never shrinks an image below its stored size for the local engines:
+All three engines apply the cap by default (`max_pixels`, default 1,638,400):
 
-- `vllm-vl` passes the original image to the model's own processor. Lift a processor cap with `--option mm_processor_kwargs='{"max_pixels": N}'` (the keys depend on the model).
-- `decide` sends the original bytes. The server's own image settings apply, so start it with its caps lifted.
-- `openai-vlm` downscales to `max_pixels` before sending (default 1,638,400 = 1600×32×32, the setting the board used for API models). `--option max_pixels=null` sends full size.
+- `vllm-vl` and `decide` downscale any image over the cap to fit it (aspect ratio kept, LANCZOS, re-encoded as PNG or JPEG quality 95). Smaller images go out as their original bytes, to the model's own processor or to the server. Lift a processor cap below 1.6 MP with `--option mm_processor_kwargs='{"max_pixels": 1638400}'` for `vllm-vl` (the keys depend on the model), or in the server's own settings for `decide`. With `image_encoding=path` the server reads the files itself, so `decide` refuses images over the cap instead of resizing them.
+- `openai-vlm` re-encodes every image as JPEG quality 90 and downscales it to fit the cap when larger.
 
-Every run records what was actually used. `environment.json` has the engine's resize policy (`model_source.image_resize`), and for `vllm-vl` the processor's image settings (`processor_image_budget`) and any `mm_processor_kwargs`. Its `effective_image_budget` holds the largest image sent, in pixels (`max_image_pixels`), and for `vllm-vl` the most image tokens in one request (`max_image_tokens`), counted from the prompt. Each result row's `raw_output` has the row's `image_pixels`, plus `image_tokens` where the engine can count them.
+`--option max_pixels=null` turns the kit's cap off. A board run doesn't do that.
+
+Every run records the budget it actually used. In `environment.json`:
+
+- `model_source.max_pixels` and `model_source.image_resize` hold the kit's cap and resize policy;
+- for `vllm-vl`, `model_source.processor_image_budget` holds the processor's own image settings, with any `mm_processor_kwargs`;
+- `effective_image_budget` holds `max_image_pixels`, the largest image sent in pixels, and for `vllm-vl` also `max_image_tokens`, the most image tokens in one request (counted from the prompt).
+
+Each result row's `raw_output` has the row's `image_pixels` as sent, plus `image_tokens` where the engine can count them.
 
 ## Run and score
 
@@ -120,5 +127,5 @@ The **Full** vision score is `0.5 × public + 0.5 × private`.
 ## Submitting
 
 1. Run the whole public vision suite with this kit (`vision pipeline` or `vision hf-job`) and upload the run directory to a Hub dataset. `vision-scores.json` must say `"complete": true`; the results file is rescored on review.
-2. Open a pull request adding a line to `submissions/README.md` marked **vision**, with the model name and Hub repo, the results dataset link, the engine and its options, the kit commit, the hardware, any declared limits (for example a maximum number of images per request), and the image resolution you ran at: native, with every author-set cap lifted, or the model's fixed image budget ([Image resolution](#image-resolution)). The run's `effective_image_budget` must agree.
+2. Open a pull request adding a line to `submissions/README.md` marked **vision**, with the model name and Hub repo, the results dataset link, the engine and its options, the kit commit, the hardware, any declared limits (for example a maximum number of images per request), and the image resolution you ran at: native up to 1.6 MP with every lower author-set cap lifted, or the model's largest fixed budget at or below 1.6 MP ([Image resolution](#image-resolution)). The run's `effective_image_budget` must agree.
 3. The maintainers then run the private half themselves: private tests of the same skills as the public benchmarks. They run the model the way you did, so it must be runnable by them: weights on the Hub (public, or access granted on request), and the inference code or server you used with its settings. The private tests are never published or shared, with submitters or anyone else; the board shows only each model's aggregate private score.
