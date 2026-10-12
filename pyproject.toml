@@ -30,6 +30,11 @@ rebuild = [
   "python-chess>=1.10",
   "tiktoken>=0.7",
 ]
+vision = [
+  "pillow>=10",
+  "pyarrow>=20",
+  "numpy>=1.26",
+]
 dev = ["pytest>=8"]
 
 [project.scripts]

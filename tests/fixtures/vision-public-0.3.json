@@ -1,0 +1,77 @@
+{
+ "chance": {
+  "CV-Bench": 0.393825646058227,
+  "BLINK": 0.3540582726326743,
+  "RealWorldQA": 0.3880871533672892,
+  "CharXiv": 0.25,
+  "InfographicVQA": 0.25,
+  "Mind2Web": 0.25,
+  "Winoground": 0.5,
+  "KIE (CORD+FUNSD)": 0.39259634888438133,
+  "Moderation (Hateful Memes)": 0.5,
+  "R-Bench-M": 0.16679197994987469,
+  "MMMU-Pro vision": 0.12811840535828978
+ },
+ "entrants": {
+  "jev-27b-vl": {
+   "name": "JEV-27B-VL",
+   "public": 72.78,
+   "correct": {
+    "CV-Bench": 1749,
+    "BLINK": 731,
+    "RealWorldQA": 488,
+    "CharXiv": 451,
+    "InfographicVQA": 241,
+    "Mind2Web": 817,
+    "Winoground": 735,
+    "KIE (CORD+FUNSD)": 2345,
+    "Moderation (Hateful Memes)": 851,
+    "R-Bench-M": 281,
+    "MMMU-Pro vision": 826
+   },
+   "bench": {
+    "CV-Bench": 76.61,
+    "BLINK": 62.95,
+    "RealWorldQA": 71.98,
+    "CharXiv": 79.7,
+    "InfographicVQA": 98.36,
+    "Mind2Web": 78.62,
+    "Winoground": 83.75,
+    "KIE (CORD+FUNSD)": 91.99,
+    "Moderation (Hateful Memes)": 40.31,
+    "R-Bench-M": 30.7,
+    "MMMU-Pro vision": 40.07
+   }
+  },
+  "solomon-v11-bf16-encoding": {
+   "name": "Solomon v1.1 (27B)",
+   "public": 69.8,
+   "correct": {
+    "CV-Bench": 1728,
+    "BLINK": 707,
+    "RealWorldQA": 500,
+    "CharXiv": 432,
+    "InfographicVQA": 236,
+    "Mind2Web": 825,
+    "Winoground": 735,
+    "KIE (CORD+FUNSD)": 2342,
+    "Moderation (Hateful Memes)": 827,
+    "R-Bench-M": 212,
+    "MMMU-Pro vision": 183
+   },
+   "bench": {
+    "CV-Bench": 74.91,
+    "BLINK": 59.08,
+    "RealWorldQA": 75.31,
+    "CharXiv": 74.94,
+    "InfographicVQA": 95.63,
+    "Mind2Web": 79.72,
+    "Winoground": 83.75,
+    "KIE (CORD+FUNSD)": 91.78,
+    "Moderation (Hateful Memes)": 36.36,
+    "R-Bench-M": 18.24,
+    "MMMU-Pro vision": -2.56
+   }
+  }
+ }
+}
