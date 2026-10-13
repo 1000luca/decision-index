@@ -142,7 +142,9 @@ def test_image_refs(tmp_path):
 def mock_client(handler):
     import httpx
 
-    return httpx.Client(base_url="http://test", transport=httpx.MockTransport(handler))
+    from decision_index.vision.engines import ThreadClients
+
+    return ThreadClients(base_url="http://test", transport=httpx.MockTransport(handler))
 
 
 def test_decide_protocol(tmp_path):
@@ -160,7 +162,7 @@ def test_decide_protocol(tmp_path):
         return httpx.Response(200, json={"choice_index": 1, "probabilities": [0.2, 0.8], "usage": {"prompt_tokens": 7}})
 
     e = HttpDecide(base_url="http://test", image_root=str(tmp_path))
-    e.client = mock_client(handler)
+    e.clients = mock_client(handler)
     q = {"answer": {"type": "choice", "instructions": "Pick", "criteria": {"A": "x", "B": "y"}}}
     resp, raw = e({}, q, images=["a.png"])
     validate(q, resp)
@@ -184,7 +186,7 @@ def test_decisions_protocol(tmp_path):
         return httpx.Response(200, json={"answers": {"answer": {"type": "choice", "choice": "A", "probabilities": {"A": 0.9, "B": 0.1}}}})
 
     e = HttpDecide(base_url="http://test", protocol="decisions", image_encoding="base64", image_root=str(tmp_path))
-    e.client = mock_client(handler)
+    e.clients = mock_client(handler)
     q = {"answer": {"type": "choice", "instructions": "Pick", "criteria": {"A": "x", "B": "y"}}}
     resp, _ = e({}, q, images=["a.png"])
     assert seen["path"] == "/v1/decisions" and seen["body"]["questions"] == q and not seen["body"]["images"][0].startswith("data:")
@@ -207,7 +209,7 @@ def test_openai_vision_parses_letters(tmp_path):
         return httpx.Response(200, json={"model": "m", "choices": [{"message": {"content": next(replies)}}], "usage": {"prompt_tokens": 3}})
 
     e = OpenAIVision(model="m", base_url="http://test", token_env="UNSET_TOKEN_ENV", max_pixels=10000)
-    e.client = mock_client(handler)
+    e.clients = mock_client(handler)
     q = {"answer": {"type": "choice", "instructions": "Pick", "criteria": {"A": "x", "B": "y"}}}
     resp, raw = e({}, q, images=[png_bytes(size=(400, 300))])
     assert resp["answers"]["answer"]["choice"] == "B" and raw["image_pixels"][0] <= e.max_pixels
@@ -320,7 +322,7 @@ def test_decide_downscales_over_the_cap(tmp_path):
         return httpx.Response(200, json={"choice_index": 0, "probabilities": [0.6, 0.4]})
 
     e = HttpDecide(base_url="http://test", image_root=str(tmp_path))
-    e.client = mock_client(handler)
+    e.clients = mock_client(handler)
     q = {"answer": {"type": "choice", "instructions": "Pick", "criteria": {"A": "x", "B": "y"}}}
     _, raw = e({}, q, images=["big.png"])
     sent = Image.open(io.BytesIO(base64.b64decode(seen["body"]["state"][0]["image"].split(",", 1)[1])))
