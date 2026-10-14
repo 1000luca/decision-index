@@ -1,12 +1,38 @@
 import math
 import os
 import re
+import threading
 import time
 
 from decision_index.engines.base import Engine, Unsupported
 from decision_index.engines.http import CAPACITY_MARKERS
 from decision_index.vision import images as img
 from decision_index.vision.rows import OPTION_LETTERS
+
+
+class ThreadClients:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.local = threading.local()
+        self.lock = threading.Lock()
+        self.all = []
+
+    def get(self):
+        c = getattr(self.local, "client", None)
+        if c is None:
+            import httpx
+
+            c = self.local.client = httpx.Client(**self.kwargs)
+            with self.lock:
+                self.all.append(c)
+        return c
+
+    def close(self):
+        with self.lock:
+            for c in self.all:
+                c.close()
+            self.all.clear()
+        self.local = threading.local()
 
 MAX_PIXELS = img.MAX_PIXELS
 TAIL = "Answer with the option's letter from the given choices directly."
@@ -171,8 +197,6 @@ class HttpDecide(Engine):
     def __init__(self, base_url=None, path=None, protocol="decide", model="default", token_env="DECISION_INDEX_API_KEY", timeout=900, retries=4,
                  image_encoding="data_url", thinking="off", extra=None, max_pixels=MAX_PIXELS, image_root=None, **options):
         super().__init__(**options)
-        import httpx
-
         base_url = base_url or os.environ.get("DECISION_INDEX_BASE_URL")
         if not base_url:
             raise ValueError("HttpDecide needs base_url (or DECISION_INDEX_BASE_URL)")
@@ -186,7 +210,7 @@ class HttpDecide(Engine):
         self.max_pixels = max_pixels
         self.protocol, self.model, self.retries, self.image_encoding, self.thinking, self.image_root = protocol, model, retries, image_encoding, thinking, image_root
         self.extra = extra or {}
-        self.client = httpx.Client(base_url=base_url, timeout=timeout, headers=headers)
+        self.clients = ThreadClients(base_url=base_url, timeout=timeout, headers=headers)
         self.provenance = {"kind": "http-decide", "base_url": base_url, "path": self.path, "protocol": protocol, "model": model, "image_encoding": image_encoding,
                            "max_pixels": max_pixels, "image_resize": resize_policy(max_pixels) + "; the server's own image settings then apply",
                            "request_options": self.extra}
@@ -226,7 +250,7 @@ class HttpDecide(Engine):
         for attempt in range(self.retries):
             r = None
             try:
-                r = self.client.post(self.path, json=body)
+                r = self.clients.get().post(self.path, json=body)
             except Exception as e:
                 err = repr(e)[:300]
             if r is not None:
@@ -243,7 +267,7 @@ class HttpDecide(Engine):
         raise RuntimeError(err)
 
     def close(self):
-        self.client.close()
+        self.clients.close()
 
 
 def parse_short(text, k):
@@ -269,8 +293,6 @@ class OpenAIVision(Engine):
     def __init__(self, model, base_url=None, token_env="DECISION_INDEX_API_KEY", max_pixels=MAX_PIXELS, max_tokens=16, long_max_tokens=1024,
                  timeout=180, retries=6, extra_body=None, image_root=None, **options):
         super().__init__(**options)
-        import httpx
-
         base_url = base_url or os.environ.get("DECISION_INDEX_BASE_URL") or "https://router.huggingface.co/v1"
         token = os.environ.get(token_env)
         if not token and "huggingface.co" in base_url:
@@ -279,7 +301,7 @@ class OpenAIVision(Engine):
             token = get_token()
         self.model, self.max_pixels, self.max_tokens, self.long_max_tokens, self.retries, self.image_root = model, max_pixels, max_tokens, long_max_tokens, retries, image_root
         self.extra_body = extra_body or {}
-        self.client = httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout, headers={"Authorization": "Bearer " + token} if token else {})
+        self.clients = ThreadClients(base_url=base_url.rstrip("/"), timeout=timeout, headers={"Authorization": "Bearer " + token} if token else {})
         self.provenance = {"kind": "openai-chat", "base_url": base_url, "model": model, "max_pixels": max_pixels, "image_resize": "every image re-encoded as JPEG quality 90" + (f", downscaled to fit {max_pixels} pixels when larger (aspect kept, bicubic)" if max_pixels else ""), "extra_body": self.extra_body,
                            "policy": "images re-encoded as JPEG (quality 90) under max_pixels, then the question with lettered options; temperature 0; the first option letter in the reply, else one longer reply and its last stated answer letter"}
 
@@ -287,7 +309,7 @@ class OpenAIVision(Engine):
         err = None
         for attempt in range(self.retries):
             try:
-                r = self.client.post("/chat/completions", json={"model": self.model, "messages": [{"role": "user", "content": content}],
+                r = self.clients.get().post("/chat/completions", json={"model": self.model, "messages": [{"role": "user", "content": content}],
                                                                 "temperature": 0, "max_tokens": max_tokens, **self.extra_body})
                 if r.status_code == 200:
                     d = r.json()
@@ -321,4 +343,4 @@ class OpenAIVision(Engine):
         pass
 
     def close(self):
-        self.client.close()
+        self.clients.close()
