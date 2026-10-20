@@ -2,9 +2,22 @@
 
 Reproduction kit for the **Decision Index**, a benchmark for *typed decision engines*: models that take a `state` and a set of typed `questions` (multiple-choice `choice` or yes/no `noul` primitives with explicit `criteria`) and return one answer per question with a probability for every supplied option. It lets anyone rebuild the frozen suite from public sources, run any engine through it with checkpoint/resume, score every benchmark with the leaderboard's own scorers, and compute the index, on a laptop or as one Hugging Face Job.
 
-The live board is **Decision Index 0.3**, the default everywhere in this kit. Its main ranking is the **Full score**: 20% the public benchmarks in this kit, 50% private tests of the same skills and 30% private decision tasks from new domains. This kit runs and scores the public part, the **public index**: 37 benchmarks in five areas, each chance-corrected (0 = random guessing, 100 = perfect) and coverage-adjusted (unanswered = wrong). The private parts are run by the maintainers on submitted models (see [Submitting a model](#submitting-a-model-to-the-leaderboard)). Editions 0.2.1, 0.2 and 0.1 stay reproducible with `--edition 0.2.1`, `--edition 0.2` and `--edition 0.1` ([docs/edition-0.1.md](docs/edition-0.1.md)).
+The live board is **Decision Index 0.4**. Its main ranking is the **Full score**: 60% private tests of the same skills as the public benchmarks and 40% private decision tasks from new domains. The public benchmarks in this kit are still required for every submission, but no longer count toward the Full score. This kit runs and scores the public part, the **public index**: 37 benchmarks in five areas, each chance-corrected (0 = random guessing, 100 = perfect) and coverage-adjusted (unanswered = wrong). The public suite is unchanged from 0.3, which stays the default everywhere in this kit. The private parts are run by the maintainers on submitted models (see [Submitting a model](#submitting-a-model-to-the-leaderboard)). Editions 0.2.1, 0.2 and 0.1 stay reproducible with `--edition 0.2.1`, `--edition 0.2` and `--edition 0.1` ([docs/edition-0.1.md](docs/edition-0.1.md)).
 
 Not affiliated with TypeSafe AI.
+
+## What changed in 0.4
+
+On the board:
+
+- The Full score is now 60% private tests of the same skills and 40% private decision tasks from new domains. The public index no longer counts toward it. Each private part is still put on the public scale with untuned stock models as the yardstick, as in 0.3.
+- The new-domain part uses a revised set of private tasks.
+- Submitting a complete public run stays mandatory: it is how a submission is validated, and the maintainers compare their own answers against it. The public index is still shown on the board. Public and private results are expected to track each other; a model whose public score sits far above its private ones gets a closer look.
+- If our checks find signs that a model's training data overlapped one of the private tests, that test is not counted for that model: its part is computed from the remaining tests, on the same scale, and its board entry says so. Which test it was is not disclosed.
+- Ties are unchanged: Full scores less than 0.9 points apart share a rank.
+- The Vision board is unchanged: 50% public vision index, 50% private tests of the same skills.
+
+In the public suite (what this kit runs): nothing changed. The 0.4 board takes the public 0.3 suite, and 0.3 runs are submitted as they are.
 
 ## What changed in 0.3
 
@@ -120,7 +133,7 @@ python -m decision_index hf-job --engine transformers --model Qwen/Qwen2.5-7B-In
 - `index.json`: per benchmark `raw`, `skill`, `coverage` and chance level; the five areas; `index` (the Decision Index) and `raw_index`.
 - `scores.json`: both combined, with completion flags. This is the file a submission points at.
 
-`index` is the public index. The board's Full score also needs the private parts, which only the maintainers can run, so the kit does not compute it.
+`index` is the public index. The board's Full score is computed from the private parts only, which only the maintainers can run, so the kit does not compute it.
 
 The 0.3 public index, exactly as the board computes it (`decision_index/scoring/index02.py`; panel, weights and chance levels in `decision_index/data/index-0.3.json`, and in `index-0.2.1.json` and `index-0.2.json` for the earlier editions):
 
@@ -225,7 +238,7 @@ Submit the **public 0.3 suite**; the maintainers run the private parts of the Fu
 2. Open a pull request adding a line to `submissions/README.md` (create it if needed) with the model name, the model repo on the Hub, the results dataset link (`runs/<name>/scores.json` must be present), the engine/commit used, hardware, and the exact inference settings you ran with. Runs must be complete (`scores.json` says `"complete": true`) and untouched: the results file is re-scored on review.
 3. Mention any declared capacity limits; they show in `environment.json` and in the unsupported counts and are fine, as long as nothing was truncated.
 
-The public suite is 20% of the Full score. After review, the maintainers run the submitted model themselves on the two private parts: private tests of the same skills as the public benchmarks (50%) and private decision tasks from new domains (30%). They run it exactly as you did, so the model has to be runnable by them: weights on the Hub (public, or access granted to the maintainers on request), the inference code you used (or a `/v1/systemone` server they can start), and its settings. The private sets are never published or shared, with submitters or anyone else, and they appear on the board only as each model's aggregate scores.
+The public run is required but does not count toward the Full score: it validates the submission, and the public index is shown on the board next to it. After review, the maintainers run the submitted model themselves on the two private parts that make up the Full score: private tests of the same skills as the public benchmarks (60%) and private decision tasks from new domains (40%). Public and private results are expected to track each other. If our checks find signs that a model's training data overlapped one of the private tests, that test is not counted for that model and its board entry says so, without naming the test. They run it exactly as you did, so the model has to be runnable by them: weights on the Hub (public, or access granted to the maintainers on request), the inference code you used (or a `/v1/systemone` server they can start), and its settings. The private sets are never published or shared, with submitters or anyone else, and they appear on the board only as each model's aggregate scores.
 
 The maintainers measure latency themselves, single-process on one RTX PRO 6000 using the fastest path the model's code supports, on a private held-out sample. That same sample is used to validate submitted runs by comparing answers. Models whose median, mean or 80th-percentile latency there is over 1,000 ms per request are not added to the board: at that speed they are no longer Jev-like.
 
