@@ -1,0 +1,5 @@
+# Model submissions
+
+| Model | Edition | Decision Index | Complete results | Engine / commit | Hardware | Declared limits |
+|---|---|---:|---|---|---|---|
+| [FlexDM · Gemma-4-31B](https://github.com/1000luca/FlexDM/tree/v1.0) (`google/gemma-4-31B-it` @ `842da37`, FP8 per-block at load, stock weights; no training) | 0.3 | 63.63 | [scores.json](https://huggingface.co/datasets/1000luca/FlexDM-decision-index/blob/102c697e1ea931b6d32f09d233c6299e8742f2cc/runs/flexdm-l1-full/scores.json) | in-process engine `jevlab.vllm_reader:VllmReader` (`layout=header read_twice=true twice_max_tokens=3000 temperature_choice=10.9757 temperature_choice_log_slope=-1.7016 temperature_noul=10.732 noul_bias=0`), unmodified runner (kit `f8552a1`), vLLM 0.30.0 offline `LLM`, FP8 per-block (online), TRITON_ATTN, prefix caching, max_model_len 131,072, `--compact`; code tag `v1.0` (`d6ee199`) | One NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition 96 GB (300 W); one process, one request at a time | Up to 131,071 tokens per row and 2-255 options per question; longer rows are recorded as `unsupported`, nothing is truncated; no public request reaches either limit |
